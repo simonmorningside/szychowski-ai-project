@@ -187,11 +187,48 @@ class Gatherer:
         # 3. Maybe penalize overly cautious gatherers who survive but gather little?
         # 4. Could reward cooperation or punish antisocial behavior
         # 5. Think about edge cases: dead vs alive, high energy vs low energy
-        #
-        # Remember: Higher fitness = more likely to reproduce!
+        # Dead agents do not reproduce
+        if not self.alive:
+            return 0.0
+
+        fitness = float(self.age)
+
+        cooperation = self.genes['cooperation']
+        caution = self.genes['caution']
+        speed = self.genes['speed']
+        search = self.genes['search_pattern']
+
+        food_multiplier = (
+            0.6 +
+            0.9 * cooperation +   # BIG cooperation reward
+            0.4 * caution         # Caution improves efficiency
+        )
+
+        fitness += (self.food_collected * food_multiplier) / 80.0
+
+
+        survival_bonus = (
+            0.5 * caution +
+            0.5 * cooperation
+        )
+
+        fitness += survival_bonus * self.age
+
+
+        if speed > 2.0 and caution < 0.4:
+            fitness *= 0.85
+
+
+        if cooperation < 0.3:
+            fitness *= 0.8
+
+
+        if cooperation > 0.5:
+            fitness += search * 2.0
+
+        return fitness
+
         
-        return self.age / 100.0  # Minimal version: just survival time
-    
     def take_damage(self):
         """Handle death/life loss"""
         self.alive = False

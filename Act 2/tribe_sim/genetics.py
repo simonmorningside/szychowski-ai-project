@@ -52,8 +52,14 @@ class GeneticAlgorithm:
         # Remember: Selection determines which traits get passed to next generation!
         
         # Minimal version: just take top 50% of population
-        survival_count = max(1, len(fitness_scores) // 2)  # Top 50%
-        survivors = [gatherer for gatherer, fitness in fitness_scores[:survival_count]]
+        group_size = 5
+        shuffled_scores = fitness_scores[:]
+        random.shuffle(shuffled_scores) 
+        grouped_scores = [shuffled_scores[i:i + group_size] for i in range(0, len(shuffled_scores), group_size)]  # Top 50%
+        top_picks = []
+        for group in grouped_scores:
+            top_picks.append(sorted(group, key=lambda x: x[1], reverse=True))  # Sort each group by fitness # Select the best from each group
+        survivors = [gatherer for group in top_picks for gatherer, fitness in group[:len(group) // 2]]
         return survivors
     
     def crossover(self, parent1, parent2):
@@ -69,30 +75,40 @@ class GeneticAlgorithm:
         return child
     
     def mutate(self, gatherer):
-        # STUDENT ASSIGNMENT 2: Implement a better mutation strategy
-        # Current version just randomly flips genes - very crude!
-        #
-        # Available information:
-        # - gatherer.genes: dict with 'speed', 'caution', 'search_pattern', 'efficiency', 'cooperation'
-        # - GENE_RANGES: dict with (min, max) values for each gene
-        # - MUTATION_RATE: probability of mutation (currently 0.1 = 10%)
-        # - MUTATION_STRENGTH: how much to change (currently 0.2 = ±20%)
-        #
-        # Strategy hints:
-        # 1. Current approach: percentage-based change (good for most genes)
-        # 2. Alternative: Gaussian/normal distribution around current value
-        # 3. Alternative: Fixed step size (add/subtract small amount)
-        # 4. Consider adaptive mutation (larger changes early, smaller later)
-        # 5. Maybe different strategies for different gene types?
-        # 6. Should all genes mutate equally? Maybe cooperation needs special handling?
-        #
-        # Remember: Mutation provides diversity but shouldn't destroy good solutions!
-        
-        for gene_name in gatherer.genes:
+        """
+        Adaptive Gaussian mutation with cooperation protection.
+        - Strong exploration early
+        - Fine-tuning later
+        - Prevents cooperation collapse
+        """
+
+        for gene_name, value in gatherer.genes.items():
             if random.random() < MUTATION_RATE:
-                # Minimal version: just flip a coin and randomize the gene completely
                 min_val, max_val = GENE_RANGES[gene_name]
-                gatherer.genes[gene_name] = random.uniform(min_val, max_val)
+                gene_range = max_val - min_val
+
+                # Adaptive mutation scaling (decays over generations)
+                generation_factor = max(0.1, 1.0 - self.generation / 100)
+
+                # Base mutation strength
+                sigma = gene_range * MUTATION_STRENGTH * generation_factor
+
+                # Cooperation protection: mutate less aggressively
+                if gene_name == "cooperation":
+                    sigma *= 0.5
+
+                # Gaussian mutation
+                mutation_amount = random.gauss(0, sigma)
+
+                # Apply mutation
+                new_value = value + mutation_amount
+
+                # Clamp to valid range
+                gatherer.genes[gene_name] = max(
+                    min_val,
+                    min(max_val, new_value)
+                )
+
     
     def create_next_generation(self, population):
         # Evaluate fitness

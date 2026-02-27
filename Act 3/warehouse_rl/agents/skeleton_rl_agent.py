@@ -114,27 +114,78 @@ class SkeletonOptimizationAgent(BaselineAgent):
     
     def _get_naive_layout_action(self, current_timestep) -> list:
         """
-        WEEK 1 STEP 1: Layout optimization - students should improve this!
-        
-        Current problems:
-        - Random swaps with no strategic purpose
-        - Ignores item co-occurrence patterns
-        - No consideration of delivery distances
-        - Wastes manager time on pointless moves
+        Frequency-based layout optimization that actually swaps items.
+        Returns storage indices, not coordinates, to match env expectation.
         """
-        
-        # TODO WEEK 1 STEP 1: Students should implement intelligent layout optimization
-        # Current approach: Occasionally make random swaps
-        
-        if current_timestep % 100 == 0 and np.random.random() < 0.2:  # Random timing
-            # Pick two random positions to swap
-            grid_size = self.env.grid_width * self.env.grid_height
-            pos1 = np.random.randint(0, grid_size)
-            pos2 = np.random.randint(0, grid_size)
-            return [pos1, pos2]
-        
-        return [0, 0]  # No swap
-    
+        if current_timestep % 100 != 0:
+            return [0, 0]
+
+        grid = self.env.warehouse_grid
+
+        frequencies = np.array(grid.item_access_frequency)
+        storage_positions = grid.storage_positions
+        num_storage = len(storage_positions)
+        print(f"[DEBUG] Number of storage cells: {num_storage}")
+
+        # Hot items (top 25% frequency)
+        hot_threshold = np.percentile(frequencies, 25)
+        hot_items = [i for i, f in enumerate(frequencies) if f >= hot_threshold and f > 0]
+        print(f"[DEBUG] Hot item indices: {hot_items}, frequencies: {frequencies[hot_items]}")
+
+        if not hot_items:
+            return [0, 0]
+
+        delivery_positions = getattr(grid, 'truck_bay_positions', [(grid.width // 2, grid.height // 2)])
+        print(f"[DEBUG] Delivery positions: {delivery_positions}")
+
+        for hot_idx in hot_items:
+            hot_pos = storage_positions[hot_idx]
+            current_dist = min(grid.manhattan_distance(hot_pos, d) for d in delivery_positions)
+            if current_dist < 1:
+                continue
+
+            # Find a closer storage cell
+            swap_candidate = self._find_closer_position(hot_idx, delivery_positions)
+            if swap_candidate:
+                target_idx = swap_candidate
+                # Ensure both positions are accessible
+                hot_x, hot_y = storage_positions[hot_idx]
+                target_x, target_y = storage_positions[target_idx]
+                if grid.can_access_storage(hot_x, hot_y) and grid.can_access_storage(target_x, target_y):
+                    print(f"[DEBUG] Swapping hot {hot_idx} at {hot_pos} <-> target at {storage_positions[target_idx]}")
+                    grid.swap_items((hot_x, hot_y), (target_x, target_y))
+                    return [hot_idx, target_idx]
+
+        print("[DEBUG] No beneficial swaps found")
+        return [0, 0]
+
+
+    def _find_closer_position(self, hot_idx: int, delivery_positions) -> int:
+        """
+        Greedy search for a storage index that reduces distance to delivery.
+        Returns target storage index if beneficial swap found, else None.
+        """
+        grid = self.env.warehouse_grid
+        current_pos = grid.storage_positions[hot_idx]
+        current_dist = min(grid.manhattan_distance(current_pos, d) for d in delivery_positions)
+
+        best_improvement = 0
+        best_idx = None
+
+        for target_idx, target_pos in enumerate(grid.storage_positions):
+            if target_idx == hot_idx:
+                continue
+            target_dist = min(grid.manhattan_distance(target_pos, d) for d in delivery_positions)
+            improvement = current_dist - target_dist
+
+            # Only accept improvements ≥ 1 and accessible target
+            tx, ty = target_pos
+            if improvement > best_improvement and grid.can_access_storage(tx, ty):
+                best_improvement = improvement
+                best_idx = target_idx
+
+        return best_idx
+    # No beneficial swap found
     def _get_naive_order_assignments(self, queue_info, employee_info) -> list:
         """
         WEEK 2 STEP 2: Order assignment - students should improve this!

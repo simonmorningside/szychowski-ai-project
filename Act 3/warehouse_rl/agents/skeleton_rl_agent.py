@@ -145,71 +145,101 @@ class SkeletonOptimizationAgent(BaselineAgent):
         if co_swap:
             print("[Smart Greedy] Executing co-occurrence swap")
             return co_swap
+        
 
-        # =========================================================
-        # 2️⃣ PRIORITY: Move hottest item closer to bay
-        # =========================================================
-        hottest_item = active_indices[np.argmax(frequencies[active_indices])]
-        hot_locations = grid.find_item_locations(hottest_item)
 
-        if not hot_locations:
-            return [0, 0]
+        swap = self._find_hot_cold_swap()
+        if swap:
+            print("[Smart Greedy] Executing global hot-cold swap")
+            return swap
+    def _find_hot_cold_swap(self):
+        """
+        Improved hot-cold swap logic using global efficiency gain.
+        
+        Selects swaps that maximize:
+            gain = (freq_hot - freq_cold) * (dist_cold - dist_hot)
 
-        hot_pos = hot_locations[0]
+        Only executes swap if gain > threshold.
+        """
+        grid = self.env.warehouse_grid
+        width = grid.width
+        delivery_positions = grid.truck_bay_positions
 
-        # Distance to nearest bay
-        current_dist = min(
-            grid.manhattan_distance(hot_pos, bay)
-            for bay in grid.truck_bay_positions
-        )
+        frequencies = np.array(grid.item_access_frequency)
+        active_items = np.where(frequencies > 0)[0]
 
-        # Find best empty storage near bay
-        best_empty = None
-        best_dist = current_dist
+        if len(active_items) < 2:
+            return None
 
-        for empty in grid.empty_storage_positions:
+        item_data = []
+
+        # Collect (item, freq, location, distance_to_bay)
+        for item in active_items:
+            locs = grid.find_item_locations(item)
+            if not locs:
+                continue
+
+            pos = locs[0]
             dist = min(
-                grid.manhattan_distance(empty, bay)
-                for bay in grid.truck_bay_positions
+                grid.manhattan_distance(pos, bay)
+                for bay in delivery_positions
             )
-            if dist < best_dist:
-                best_dist = dist
-                best_empty = empty
 
-        if best_empty:
-            print(f"[Smart Greedy] Moving hot item {hottest_item} closer to bay")
-            return [
-                hot_pos[1] * width + hot_pos[0],
-                best_empty[1] * width + best_empty[0]
-            ]
+            item_data.append((item, frequencies[item], pos, dist))
 
-        # =========================================================
-        # 3️⃣ PRIORITY: Swap with cold item blocking prime space
-        # =========================================================
-        cold_item = active_indices[np.argmin(frequencies[active_indices])]
-        cold_locations = grid.find_item_locations(cold_item)
+        if len(item_data) < 2:
+            return None
 
-        if not cold_locations:
-            return [0, 0]
+        best_gain = 0
+        best_swap = None
 
-        cold_pos = cold_locations[0]
+        # Evaluate all pairs
+        for i in range(len(item_data)):
+            for j in range(i + 1, len(item_data)):
 
-        cold_dist = min(
-            grid.manhattan_distance(cold_pos, bay)
-            for bay in grid.truck_bay_positions
-        )
+                item1, freq1, pos1, dist1 = item_data[i]
+                item2, freq2, pos2, dist2 = item_data[j]
 
-        # Only swap if cold item is in a better location than hot item
-        if cold_dist < current_dist - 1:
-            print(f"[Smart Greedy] Swapping hot {hottest_item} with cold {cold_item}")
+                # Only consider meaningful hot-cold contrast
+                if freq1 == freq2:
+                    continue
+
+                # Define hot and cold
+                if freq1 > freq2:
+                    hot_item, cold_item = item1, item2
+                    hot_freq, cold_freq = freq1, freq2
+                    hot_pos, cold_pos = pos1, pos2
+                    hot_dist, cold_dist = dist1, dist2
+                else:
+                    hot_item, cold_item = item2, item1
+                    hot_freq, cold_freq = freq2, freq1
+                    hot_pos, cold_pos = pos2, pos1
+                    hot_dist, cold_dist = dist2, dist1
+
+                # Only swap if cold is closer to bay than hot
+                if cold_dist >= hot_dist:
+                    continue
+
+                # Calculate weighted gain
+                gain = (hot_freq - cold_freq) * (hot_dist - cold_dist)
+
+                if gain > best_gain:
+                    best_gain = gain
+                    best_swap = (hot_pos, cold_pos)
+
+        # Threshold prevents micro-optimizations
+        MIN_GAIN_THRESHOLD = 5
+
+        if best_gain > MIN_GAIN_THRESHOLD and best_swap:
+            hot_pos, cold_pos = best_swap
+            print(f"[Hot-Cold] Gain={best_gain:.2f}")
             return [
                 hot_pos[1] * width + hot_pos[0],
                 cold_pos[1] * width + cold_pos[0]
             ]
 
-        return [0, 0]
-
-
+        return None
+    
     def _find_cooccurrence_swap(self):
         """
         Greedy clustering algorithm for association-based spatial optimization.

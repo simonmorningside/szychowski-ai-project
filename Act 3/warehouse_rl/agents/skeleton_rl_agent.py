@@ -35,8 +35,7 @@ class SkeletonOptimizationAgent(BaselineAgent):
         self.name = "StudentOptimization"
 
         # Enable unlimited hiring for true economic optimization
-        self.env._unlimited_hiring = True
-        
+        self.env._unlimited_hiring = False     
         # Students can add their own state tracking here
         self.performance_metrics = []
         self.decision_history = []
@@ -53,76 +52,189 @@ class SkeletonOptimizationAgent(BaselineAgent):
         self.adaptive_optimization_enabled = False
         
     def reset(self):
-        """Reset agent state - students should expand this"""
+        """Reset agent state between episodes/tests."""
         self.action_history = []
         self.reward_history = []
-        # TODO: Reset any neural network states, replay buffers, etc.
+        self.performance_metrics = []
+        self.decision_history = []
+        self.profit_history = []
+        self.integrated_metrics = []
     
     def get_action(self, observation: Dict) -> Dict:
         """
-        Generate action based on observation with performance tracking.
-        Suppresses per-step debug prints unless a layout swap occurs.
+        Week 2: Integrated optimization across all decision areas
         """
-
         current_timestep = observation['time'][0]
         financial_state = observation['financial']
         queue_info = observation['order_queue']
         employee_info = observation['employees']
 
-        layout_action = self._get_naive_layout_action(current_timestep)
-
         action = {
             'staffing_action': self._get_naive_staffing_action(financial_state, employee_info),
-            'layout_swap': layout_action,
+            'layout_swap': self._get_naive_layout_action(current_timestep),
             'order_assignments': self._get_naive_order_assignments(queue_info, employee_info)
         }
 
-        # Record action history
+        # Record action for optimization analysis
         if not hasattr(self, 'action_history'):
             self.action_history = []
         self.action_history.append(action.copy())
 
-        # Optional debug: only print if a swap happened
-        if layout_action != [0, 0]:
-            print(f"[Action] Timestep {current_timestep}, layout swap executed: {layout_action}")
+        # Optional debug
+        if action['layout_swap'] != [0, 0]:
+            print(f"[Action] Timestep {current_timestep}, layout swap executed: {action['layout_swap']}")
 
-        # Track performance every 100 timesteps
+        # Track integrated performance every 100 steps
         if current_timestep % 100 == 0:
-            self.track_layout_performance()
+            self.track_integrated_performance()
 
         return action
     
+    def track_integrated_performance(self):
+        """
+        Performance analysis for integrated optimization system.
+
+        Measures:
+        - Economic efficiency (profit per employee)
+        - Assignment quality proxy (queue pressure / assignment usage)
+        - Layout effectiveness
+        - Overall system performance
+        """
+        if not hasattr(self, 'integrated_metrics'):
+            self.integrated_metrics = []
+
+        current_profit = self.env.cumulative_profit
+        num_employees = len(self.env.employees)
+        queue_length = len(self.env.order_queue.orders)
+
+        # Economic efficiency
+        profit_per_employee = current_profit / max(1, num_employees)
+        queue_pressure = queue_length / max(1, num_employees)
+
+        # Assignment quality proxy:
+        # count how many non-zero order assignments were made in the most recent action
+        assignment_count = 0
+        staffing_action = 0
+        layout_swap_made = 0
+
+        if hasattr(self, 'action_history') and len(self.action_history) > 0:
+            latest_action = self.action_history[-1]
+            assignment_count = sum(1 for a in latest_action['order_assignments'] if a != 0)
+            staffing_action = latest_action['staffing_action']
+            layout_swap_made = 1 if latest_action['layout_swap'] != [0, 0] else 0
+
+        # Layout efficiency from Week 1 logic
+        layout_efficiency = self.track_layout_performance()
+
+        self.integrated_metrics.append({
+            'timestep': self.env.current_timestep,
+            'profit_per_employee': profit_per_employee,
+            'queue_pressure': queue_pressure,
+            'assignment_count': assignment_count,
+            'staffing_action': staffing_action,
+            'layout_swap_made': layout_swap_made,
+            'total_decisions': len([
+                a for a in self.action_history
+                if (
+                    a['staffing_action'] != 0 or
+                    a['layout_swap'] != [0, 0] or
+                    any(x != 0 for x in a['order_assignments'])
+                )
+            ]),
+            'layout_efficiency': layout_efficiency
+        })
+
+        # Print integrated progress every 1000 steps
+        if self.env.current_timestep % 1000 == 0:
+            recent_metrics = self.integrated_metrics[-10:]
+            avg_profit_per_emp = np.mean([m['profit_per_employee'] for m in recent_metrics])
+            avg_queue_pressure = np.mean([m['queue_pressure'] for m in recent_metrics])
+            avg_layout_eff = np.mean([m['layout_efficiency'] for m in recent_metrics])
+            avg_assignments = np.mean([m['assignment_count'] for m in recent_metrics])
+
+            print(
+                f"[Integrated Performance] "
+                f"${avg_profit_per_emp:.2f}/employee, "
+                f"Queue pressure: {avg_queue_pressure:.2f}, "
+                f"Layout efficiency: {avg_layout_eff:.3f}, "
+                f"Assignments: {avg_assignments:.2f}"
+            )
+
     def _get_naive_staffing_action(self, financial_state, employee_info) -> int:
-        """
-        WEEK 2 STEP 1: Staffing decisions - students should improve this!
-        
-        Current problems:
-        - Ignores queue length and workload
-        - Random decisions regardless of profit
-        - No consideration of employee efficiency
-        """
-        
-        # TODO WEEK 2 STEP 1: Students should implement intelligent staffing logic
-        # Current approach: Make random decisions based on "vibes"
-        
         current_profit = financial_state[0]
-        num_employees = np.sum(employee_info[:, 0] > 0)  # Count active employees
+        revenue = financial_state[1]
+        costs = financial_state[2]
+        burn_rate = financial_state[3]
         
-        # Terrible logic: Random decisions with slight bias
-        # BUT: Hire managers more frequently so layout optimization can work
-        has_manager = np.any(employee_info[:, 5] == 1)  # Check if we have a manager
-        
-        if np.random.random() < 0.3:  # 30% chance to hire
-            if num_employees < 20:  # Don't go completely overboard
-                return 1  # Hire worker
-        elif np.random.random() < 0.1:  # 10% chance to fire
-            if num_employees > 1:  # Don't fire everyone
-                return 2  # Fire worker
-        elif np.random.random() < 0.2:  # 20% chance to hire manager (increased from 5%)
-            if not has_manager or num_employees > 10:  # Hire manager if we don't have one, or if we have lots of workers
-                return 3  # Hire manager
-        
-        return 0  # No action
+        num_employees = int(np.sum(employee_info[:, 0] > 0))
+        queue_length = len(self.env.order_queue.orders)
+        has_manager = np.any(employee_info[:, 5] == 1)
+
+        queue_pressure = queue_length / max(1, num_employees)
+        profit_per_employee = current_profit / max(1, num_employees)
+
+        if not hasattr(self, "profit_history"):
+            self.profit_history = []
+        self.profit_history.append(current_profit)
+        if len(self.profit_history) > 8:
+            self.profit_history.pop(0)
+
+        if len(self.profit_history) >= 4:
+            midpoint = len(self.profit_history) // 2
+            older_avg = np.mean(self.profit_history[:midpoint])
+            recent_avg = np.mean(self.profit_history[midpoint:])
+            profit_trend = recent_avg - older_avg
+        else:
+            profit_trend = 0.0
+
+        hire_threshold = 2.0
+        fire_threshold = 0.25
+        min_staff = 2
+
+        # Hard safety cap
+        max_staff = 20
+
+        # Do not hire aggressively once workforce gets large
+        large_staff_threshold = 12
+
+        # Main hire logic
+        if num_employees < max_staff:
+            # Small/medium workforce: hire based mostly on backlog
+            if num_employees < large_staff_threshold:
+                if queue_pressure > hire_threshold:
+                    return 1
+
+            # Large workforce: require backlog AND financial health
+            else:
+                if (
+                    queue_pressure > 2.5
+                    and current_profit > 0
+                    and profit_per_employee > 0
+                    and profit_trend >= 0
+                ):
+                    return 1
+
+        # Conservative firing
+        if (
+            queue_pressure < fire_threshold
+            and queue_length == 0
+            and current_profit < 0
+            and num_employees > min_staff
+        ):
+            return 2
+
+        # Manager only when worth trying
+        if (
+            not has_manager
+            and num_employees >= 8
+            and num_employees <= 15
+            and queue_length >= 8
+            and current_profit > 0
+            and profit_trend >= 0
+        ):
+            return 3
+
+        return 0
     
     def _get_naive_layout_action(self, current_timestep):
 
@@ -130,28 +242,32 @@ class SkeletonOptimizationAgent(BaselineAgent):
             return [0, 0]
 
         grid = self.env.warehouse_grid
-        width = grid.width
-
         frequencies = np.array(grid.item_access_frequency)
         active_indices = np.where(frequencies > 0)[0]
 
         if len(active_indices) == 0:
             return [0, 0]
 
-        # =========================================================
-        # 1️⃣ PRIORITY: Co-occurrence clustering
-        # =========================================================
+        # 1. Highest priority: enforce hot items near the front
+        priority_swap = self._find_frequency_priority_swap()
+        if priority_swap:
+            print("[Smart Greedy] Executing frequency-priority swap")
+            return priority_swap
+
+        # 2. Secondary: co-occurrence clustering
         co_swap = self._find_cooccurrence_swap()
         if co_swap:
             print("[Smart Greedy] Executing co-occurrence swap")
             return co_swap
-        
 
-
+        # 3. Fallback: generic hot-cold swap
         swap = self._find_hot_cold_swap()
         if swap:
             print("[Smart Greedy] Executing global hot-cold swap")
             return swap
+
+        return [0, 0]
+    
     def _find_hot_cold_swap(self):
         """
         Improved hot-cold swap logic using global efficiency gain.
@@ -408,30 +524,279 @@ class SkeletonOptimizationAgent(BaselineAgent):
         print(f"[Efficiency] Weighted avg distance: {weighted_avg_distance:.2f}, Efficiency: {efficiency:.3f}")
         return efficiency
                 
+    def _calculate_order_distance(self, worker_pos, order):
+        """
+        Calculate minimum distance from worker to any item needed for this order.
+        
+        Algorithm: Find the closest required item location and return that distance.
+        """
+        grid = self.env.warehouse_grid
+        min_distance = float('inf')
+        
+        # Assumes order.items contains item IDs needed for the order
+        for item_id in order.items:
+            item_locations = grid.find_item_locations(item_id)
+            
+            if not item_locations:
+                continue
+            
+            for location in item_locations:
+                distance = grid.manhattan_distance(worker_pos, location)
+                if distance < min_distance:
+                    min_distance = distance
+        
+        return min_distance if min_distance != float('inf') else 0
+
+
+    def _get_idle_workers(self, employee_info):
+        """
+        Identify workers available for order assignment.
+        
+        Returns list of (worker_index, worker_position) for available workers.
+        
+        employee_info format:
+        [x, y, state, has_order, items_collected, is_manager]
+        """
+        idle_workers = []
+        
+        for worker_idx, worker in enumerate(employee_info):
+            x = int(worker[0])
+            y = int(worker[1])
+            state = int(worker[2])
+            has_order = int(worker[3])
+            is_manager = int(worker[5])
+            
+            # Treat valid coordinates as active/present in the warehouse
+            is_active = x >= 0 and y >= 0
+            is_idle = state == 0
+            not_busy_with_order = has_order == 0
+            not_manager = is_manager == 0
+            
+            if is_active and is_idle and not_busy_with_order and not_manager:
+                idle_workers.append((worker_idx, (x, y)))
+        
+        return idle_workers
+
+    def _get_storage_positions_by_bay_distance(self):
+        """
+        Return all occupied storage positions sorted by closeness to nearest truck bay.
+        Closest positions come first.
+        """
+        grid = self.env.warehouse_grid
+        delivery_positions = grid.truck_bay_positions
+        positions = []
+
+        for y in range(grid.height):
+            for x in range(grid.width):
+                if grid.cell_types[y, x] != 1:
+                    continue
+
+                pos = (x, y)
+                dist = min(
+                    grid.manhattan_distance(pos, bay)
+                    for bay in delivery_positions
+                )
+                positions.append((pos, dist))
+
+        positions.sort(key=lambda x: x[1])
+        return [pos for pos, _ in positions]
+
+
+    def _get_item_primary_positions(self):
+        """
+        Build a mapping from item_id -> one representative location.
+        Assumes one primary useful location per item for swap planning.
+        """
+        grid = self.env.warehouse_grid
+        frequencies = np.array(grid.item_access_frequency)
+
+        item_positions = {}
+        for item_id in np.where(frequencies > 0)[0]:
+            locs = grid.find_item_locations(item_id)
+            if locs:
+                item_positions[item_id] = locs[0]
+
+        return item_positions
+
+
+    def _find_frequency_priority_swap(self):
+        """
+        Stronger global layout rule:
+        make sure closest positions are occupied by hottest items.
+
+        Returns a swap [from_idx, to_idx] if a beneficial swap exists.
+        """
+        grid = self.env.warehouse_grid
+        width = grid.width
+        frequencies = np.array(grid.item_access_frequency)
+
+        # Active items sorted hottest -> coldest
+        active_items = [item for item in np.where(frequencies > 0)[0]]
+        if len(active_items) < 2:
+            return None
+
+        active_items.sort(key=lambda item: frequencies[item], reverse=True)
+
+        # Closest storage positions sorted front -> back
+        ranked_positions = self._get_storage_positions_by_bay_distance()
+
+        # Current item locations
+        item_positions = self._get_item_primary_positions()
+        if len(item_positions) < 2:
+            return None
+
+        # Reverse mapping: position -> item
+        position_to_item = {pos: item for item, pos in item_positions.items()}
+
+        # Only consider positions that currently hold active items
+        occupied_ranked_positions = [pos for pos in ranked_positions if pos in position_to_item]
+        if len(occupied_ranked_positions) < 2:
+            return None
+
+        # Ideal assignment:
+        # hottest item should be in closest occupied position, etc.
+        ideal_pairs = list(zip(active_items[:len(occupied_ranked_positions)], occupied_ranked_positions))
+
+        best_gain = 0
+        best_swap = None
+
+        for ideal_item, target_pos in ideal_pairs:
+            current_pos = item_positions.get(ideal_item)
+            if current_pos is None:
+                continue
+
+            # Already in the desired spot
+            if current_pos == target_pos:
+                continue
+
+            occupying_item = position_to_item.get(target_pos)
+            if occupying_item is None:
+                continue
+
+            hot_freq = frequencies[ideal_item]
+            cold_freq = frequencies[occupying_item]
+
+            # Only swap if hotter item is being blocked by colder one
+            if hot_freq <= cold_freq:
+                continue
+
+            # Compute benefit based on frequency gap and positional improvement
+            current_dist = min(
+                grid.manhattan_distance(current_pos, bay)
+                for bay in grid.truck_bay_positions
+            )
+            target_dist = min(
+                grid.manhattan_distance(target_pos, bay)
+                for bay in grid.truck_bay_positions
+            )
+
+            if target_dist >= current_dist:
+                continue
+
+            gain = (hot_freq - cold_freq) * (current_dist - target_dist)
+
+            if gain > best_gain:
+                best_gain = gain
+                best_swap = (current_pos, target_pos)
+
+        MIN_GAIN_THRESHOLD = 3
+
+        if best_swap and best_gain > MIN_GAIN_THRESHOLD:
+            from_pos, to_pos = best_swap
+            print(f"[Priority Layout] Gain={best_gain:.2f} swapping {from_pos} <-> {to_pos}")
+            return [
+                from_pos[1] * width + from_pos[0],
+                to_pos[1] * width + to_pos[0]
+            ]
+
+        return None
+    
     def _get_naive_order_assignments(self, queue_info, employee_info) -> list:
         """
-        WEEK 2 STEP 2: Order assignment - students should improve this!
+        WEEK 2 STEP 2: Worker-to-order matching optimization
         
-        Current problems:
-        - Ignores employee locations
-        - No consideration of order priority/value
-        - Random assignments regardless of efficiency
-        - Doesn't check if employees are actually available
+        Greedy assignment using:
+        - Distance Weight: 70%
+        - Value Weight: 30%
+        - Maximum Distance: grid width + grid height
+        - Assignment Method: Greedy
         """
         
-        # TODO WEEK 2 STEP 2: Students should implement intelligent order assignment
-        # Current approach: Random assignments
+        assignments = [0] * 20
         
-        assignments = [0] * 20  # No assignments by default
+        # Get pending orders limited to action space size
+        pending_orders = list(self.env.order_queue.orders[:20])
+        if len(pending_orders) == 0:
+            return assignments
         
-        # Count how many employees we have (very naive)
-        num_employees = int(np.sum(employee_info[:, 0] > 0))
+        # Find available workers
+        idle_workers = self._get_idle_workers(employee_info)
+        if len(idle_workers) == 0:
+            return assignments
         
-        # Randomly assign first few orders to first few employees
-        if num_employees > 0:
-            for i in range(min(3, num_employees)):  # Only assign 3 orders max
-                if np.random.random() < 0.6:  # 60% chance to assign
-                    assignments[i] = (i % num_employees) + 1  # Random employee
+        grid = self.env.warehouse_grid
+        max_distance = grid.width + grid.height
+        distance_weight = 0.7
+        value_weight = 0.3
+        
+        def get_order_value(order):
+            """
+            Try common order value fields. Default to 1.0 if none found.
+            """
+            for attr in ["total_value", "value", "reward", "priority"]:
+                if hasattr(order, attr):
+                    try:
+                        return float(getattr(order, attr))
+                    except Exception:
+                        pass
+            return 1.0
+        
+        # Normalize order values
+        order_values = [get_order_value(order) for order in pending_orders]
+        max_order_value = max(order_values) if order_values else 1.0
+        if max_order_value <= 0:
+            max_order_value = 1.0
+        
+        # Calculate assignment scores for all worker-order pairs
+        scored_pairs = []
+        
+        for order_idx, order in enumerate(pending_orders):
+            order_value = get_order_value(order)
+            value_score = order_value / max_order_value
+            
+            for worker_idx, worker_pos in idle_workers:
+                min_dist = self._calculate_order_distance(worker_pos, order)
+                
+                # Distance score = 1 / (1 + min_distance)
+                distance_score = 1.0 / (1.0 + min_dist)
+                
+                # Combined score
+                combined_score = (
+                    distance_weight * distance_score
+                    + value_weight * value_score
+                )
+                
+                scored_pairs.append((combined_score, order_idx, worker_idx))
+        
+        # Greedy assignment algorithm
+        scored_pairs.sort(reverse=True, key=lambda x: x[0])
+        
+        assigned_workers = set()
+        assigned_orders = set()
+        
+        for score, order_idx, worker_idx in scored_pairs:
+            if order_idx in assigned_orders:
+                continue
+            if worker_idx in assigned_workers:
+                continue
+            
+            # action format uses 1-indexed worker IDs
+            assignments[order_idx] = worker_idx + 1
+            assigned_orders.add(order_idx)
+            assigned_workers.add(worker_idx)
+            
+            if len(assigned_workers) == len(idle_workers):
+                break
         
         return assignments
     
